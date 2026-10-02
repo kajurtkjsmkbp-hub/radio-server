@@ -567,7 +567,11 @@ export default function MediaLibraryModal({
             <div className="col-span-3 sm:col-span-2 text-right">Aksi Cepat</div>
           </div>
 
-          {loading ? (
+          {loading && tracks.length > 0 && (
+            <div className="h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent animate-pulse rounded-full" />
+          )}
+
+          {loading && tracks.length === 0 ? (
             <div className="py-20 flex flex-col items-center justify-center gap-3 text-cyan-400">
               <RefreshCw className="w-8 h-8 animate-spin" />
               <span className="text-xs font-bold tracking-wider">MEMINDAI KOLEKSI AUDIO DARI SERVER PROXMOX...</span>

@@ -727,11 +727,26 @@ app.delete('/api/schedule/:slotId/track/:trackId', (req, res) => {
 
 // ========================================================
 // 9. PUSTAKA MUSIK SERVER (SERVER MEDIA LIBRARY / MUSIC POOL)
-// ========================================================
+// In-memory Duration & Metadata Cache for High-Speed Library Scanning
+const mediaDurationCache = new Map();
 
 function scanMediaLibrary() {
   const allowedExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.webm']);
   const results = [];
+
+  // Pre-index slot usages in O(1) Map instead of nested O(N*M) loop
+  const urlToSlotsMap = new Map();
+  for (const s of programSchedule) {
+    if (s.tracks) {
+      for (const t of s.tracks) {
+        const u = t.url || t.audioUrl;
+        if (u) {
+          if (!urlToSlotsMap.has(u)) urlToSlotsMap.set(u, []);
+          urlToSlotsMap.get(u).push({ id: s.id, title: s.title, startTime: s.startTime, endTime: s.endTime });
+        }
+      }
+    }
+  }
 
   function walkDir(dir, relativePrefix = '') {
     if (!fs.existsSync(dir)) return;
@@ -753,14 +768,19 @@ function scanMediaLibrary() {
               cleanTitle = cleanTitle.replace(/^lib_\d+_/, '');
               cleanTitle = cleanTitle.replace(/_/g, ' ').trim();
 
-              const usedInSlots = [];
-              for (const s of programSchedule) {
-                if (s.tracks && s.tracks.some(t => t.url === url || t.audioUrl === url)) {
-                  usedInSlots.push({ id: s.id, title: s.title, startTime: s.startTime, endTime: s.endTime });
+              const usedInSlots = urlToSlotsMap.get(url) || [];
+
+              // Ultra-fast cached duration
+              let duration = 210;
+              if (ext === '.mp3') {
+                const cached = mediaDurationCache.get(fullPath);
+                if (cached && cached.mtime === stats.mtimeMs) {
+                  duration = cached.duration;
+                } else {
+                  duration = getMp3Duration(fullPath);
+                  mediaDurationCache.set(fullPath, { mtime: stats.mtimeMs, duration });
                 }
               }
-
-              const duration = ext === '.mp3' ? getMp3Duration(fullPath) : 210;
 
               results.push({
                 id: `lib-${Buffer.from(relPath).toString('base64url').substring(0, 20)}`,
