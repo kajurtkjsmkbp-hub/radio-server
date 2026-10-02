@@ -19,8 +19,11 @@ import {
   ArrowRight,
   Music,
   AlertTriangle,
-  Radio
+  Radio,
+  CheckCircle,
+  Zap
 } from 'lucide-react';
+import { uploadFileWithProgress } from '../utils/uploader';
 
 export default function MediaLibraryModal({
   isOpen,
@@ -39,7 +42,9 @@ export default function MediaLibraryModal({
   const [filterUsage, setFilterUsage] = useState('all'); // 'all', 'unused', 'used'
   const [sortBy, setSortBy] = useState('date_desc');
   const [uploading, setUploading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState('');
+  const [uploadProgressData, setUploadProgressData] = useState(null);
+  const [successUploadSummary, setSuccessUploadSummary] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
   const [actionMessage, setActionMessage] = useState(null);
   const [deleteConfirmFile, setDeleteConfirmFile] = useState(null);
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
@@ -124,35 +129,87 @@ export default function MediaLibraryModal({
     return `${mb.toFixed(1)} MB`;
   };
 
-  // Upload new MP3s directly to the central library
+  // Upload new MP3s directly to the central library with real-time speed & progress
   const handleUploadToLibrary = async (files) => {
     if (!files || files.length === 0) return;
     setUploading(true);
+    setUploadError(null);
+    setSuccessUploadSummary(null);
     const fileList = Array.from(files);
+
+    // Warning if any file exceeds ~98 MB (Cloudflare Tunnel Free limit is ~100MB body)
+    const oversizedFiles = fileList.filter(f => f.size > 98 * 1024 * 1024);
+    if (oversizedFiles.length > 0) {
+      const confirmUpload = window.confirm(
+        `Perhatian: File "${oversizedFiles[0].name}" berukuran ${(oversizedFiles[0].size / (1024 * 1024)).toFixed(1)} MB.\n` +
+        `Cloudflare Tunnel gratis biasanya membatasi upload maks 100 MB per request.\n` +
+        `Apakah Anda ingin tetap mencoba mengunggah?`
+      );
+      if (!confirmUpload) {
+        setUploading(false);
+        return;
+      }
+    }
+
+    let successCount = 0;
+    let totalUploadedBytes = 0;
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
-      setUploadStatus(`Mengunggah (${i + 1}/${fileList.length}): ${cleanTitle}`);
+
+      setUploadProgressData({
+        current: i + 1,
+        total: fileList.length,
+        name: cleanTitle,
+        percent: 0,
+        speedMBs: '0.00',
+        uploadedMB: '0.0',
+        fileSizeMB: (file.size / (1024 * 1024)).toFixed(1),
+        etaSeconds: 0
+      });
 
       try {
-        await fetch('/api/library/upload', {
-          method: 'POST',
+        await uploadFileWithProgress({
+          url: '/api/library/upload',
           headers: {
             'x-title': encodeURIComponent(cleanTitle),
             'x-filename': encodeURIComponent(file.name)
           },
-          body: file
+          file,
+          onProgress: (prog) => {
+            setUploadProgressData({
+              current: i + 1,
+              total: fileList.length,
+              name: cleanTitle,
+              ...prog
+            });
+          }
         });
+        successCount++;
+        totalUploadedBytes += file.size;
       } catch (err) {
         console.error('Error uploading file to library:', err);
+        setUploadError(`Gagal mengunggah "${file.name}": ${err.message}`);
+        break;
       }
     }
 
     setUploading(false);
-    setUploadStatus('');
+    setUploadProgressData(null);
     fetchLibraryTracks();
-    showActionToast(`Berhasil menambahkan ${fileList.length} lagu ke Pustaka Server`);
+
+    if (successCount > 0) {
+      const summary = {
+        count: successCount,
+        totalMB: (totalUploadedBytes / (1024 * 1024)).toFixed(1)
+      };
+      setSuccessUploadSummary(summary);
+      showActionToast(`Berhasil menambahkan ${successCount} lagu (${summary.totalMB} MB) ke Pustaka Server`);
+      setTimeout(() => {
+        setSuccessUploadSummary(null);
+      }, 8000);
+    }
   };
 
   // Add tracks to slot (single or batch)
@@ -471,13 +528,102 @@ export default function MediaLibraryModal({
           </div>
         </div>
 
-        {/* UPLOAD STATUS BANNER */}
-        {uploading && (
-          <div className="bg-amber-950/70 border-b border-amber-500/50 px-5 py-2.5 text-xs text-amber-200 flex items-center justify-between animate-pulse">
-            <span className="flex items-center gap-2">
-              <Upload className="w-4 h-4 animate-bounce text-amber-400" />
-              <span>{uploadStatus || 'Sedang mengunggah audio ke server Proxmox...'}</span>
-            </span>
+        {/* REAL-TIME UPLOAD PROGRESS CARD */}
+        {uploading && uploadProgressData && (
+          <div className="bg-gradient-to-r from-[#0d1c2e] via-[#091524] to-[#0d1c2e] border-b border-cyan-500/50 p-3 sm:p-4 animate-in slide-in-from-top-2">
+            <div className="flex flex-col gap-2 max-w-4xl mx-auto">
+              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <Upload className="w-4 h-4 text-cyan-400 animate-bounce shrink-0" />
+                  <span className="font-bold text-gray-200 truncate">
+                    Mengunggah ({uploadProgressData.current}/{uploadProgressData.total}):{' '}
+                    <span className="text-cyan-300 font-semibold">&ldquo;{uploadProgressData.name}&rdquo;</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <span className="px-2 py-0.5 rounded bg-cyan-950/90 border border-cyan-500/40 text-amber-300 font-lcd font-bold text-xs flex items-center gap-1 shadow-sm">
+                    <Zap className="w-3 h-3 fill-current text-amber-400" />
+                    {uploadProgressData.speedMBs} MB/s
+                  </span>
+                  <span className="font-lcd text-sm font-bold text-emerald-400 min-w-[42px] text-right">
+                    {uploadProgressData.percent}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Progress Bar with glowing pulse */}
+              <div className="w-full bg-[#040810] h-3 rounded-full overflow-hidden border border-cyan-500/30 p-[1px]">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-full rounded-full transition-all duration-150 relative overflow-hidden"
+                  style={{ width: `${uploadProgressData.percent}%` }}
+                >
+                  <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] text-gray-400 font-chakra">
+                <span>
+                  Ukuran: <strong className="text-gray-200">{uploadProgressData.uploadedMB} MB</strong> dari{' '}
+                  <strong className="text-cyan-300">{uploadProgressData.fileSizeMB} MB</strong>
+                </span>
+                <span>
+                  {uploadProgressData.etaSeconds > 0 ? (
+                    <>
+                      Estimasi sisa waktu:{' '}
+                      <strong className="text-amber-300 font-mono">~{uploadProgressData.etaSeconds} detik</strong>
+                    </>
+                  ) : uploadProgressData.percent === 100 ? (
+                    <span className="text-emerald-400 font-bold animate-pulse">Menyimpan ke harddisk server...</span>
+                  ) : (
+                    <span className="text-gray-500">Menghitung kecepatan...</span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* UPLOAD SUCCESS BANNER */}
+        {successUploadSummary && (
+          <div className="bg-emerald-950/90 border-b border-emerald-500/60 p-3 px-5 flex items-center justify-between gap-3 text-xs text-emerald-200 animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
+              <div>
+                <div className="font-bold text-emerald-300 text-sm">
+                  Upload Berhasil! ({successUploadSummary.count} Lagu)
+                </div>
+                <div className="text-[11px] text-emerald-400/80">
+                  Total data {successUploadSummary.totalMB} MB telah tersimpan di harddisk Proxmox dan siap digunakan di playlist jadwal.
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSuccessUploadSummary(null)}
+              className="p-1 rounded text-emerald-400 hover:text-emerald-100 hover:bg-emerald-900/50"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* UPLOAD ERROR BANNER */}
+        {uploadError && (
+          <div className="bg-rose-950/90 border-b border-rose-500/60 p-3 px-5 flex items-center justify-between gap-3 text-xs text-rose-200 animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+              <div>
+                <div className="font-bold text-rose-300 text-sm">Upload Terganggu / Gagal</div>
+                <div className="text-[11px] text-rose-300/80">{uploadError}</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setUploadError(null)}
+              className="p-1 rounded text-rose-400 hover:text-rose-100 hover:bg-rose-900/50"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
 

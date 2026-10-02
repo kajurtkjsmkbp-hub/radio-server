@@ -23,6 +23,7 @@ import {
   Library
 } from 'lucide-react';
 import MediaLibraryModal from './MediaLibraryModal';
+import { uploadFileWithProgress } from '../utils/uploader';
 
 export default function ScheduleManager({
   onLoadSlotToPlaylist,
@@ -35,7 +36,8 @@ export default function ScheduleManager({
   const [isAdding, setIsAdding] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [expandedSlot, setExpandedSlot] = useState(null);
-  const [uploadProgress, setUploadProgress] = useState(null); // { slotId, current, total, name }
+  const [uploadProgress, setUploadProgress] = useState(null); // { slotId, current, total, name, percent, speedMBs, uploadedMB, fileSizeMB, etaSeconds }
+  const [slotActionMessage, setSlotActionMessage] = useState(null);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [libraryTargetSlotId, setLibraryTargetSlotId] = useState(null);
   const fileInputRefs = useRef({});
@@ -134,10 +136,24 @@ export default function ScheduleManager({
     }
   };
 
-  // Handle uploading actual audio MP3 files to the server for a specific schedule slot
+  // Handle uploading actual audio MP3 files to the server for a specific schedule slot with real-time progress
   const handleTrackUpload = async (slotId, files) => {
     if (!files || files.length === 0) return;
     const fileList = Array.from(files);
+
+    // Warning if any file exceeds ~98 MB (Cloudflare Tunnel Free limit)
+    const oversizedFiles = fileList.filter(f => f.size > 98 * 1024 * 1024);
+    if (oversizedFiles.length > 0) {
+      const confirmUpload = window.confirm(
+        `Perhatian: File "${oversizedFiles[0].name}" berukuran ${(oversizedFiles[0].size / (1024 * 1024)).toFixed(1)} MB.\n` +
+        `Cloudflare Tunnel biasanya membatasi upload maks 100 MB per file.\n` +
+        `Apakah Anda ingin tetap mencoba mengunggah?`
+      );
+      if (!confirmUpload) return;
+    }
+
+    let successCount = 0;
+    let totalUploadedBytes = 0;
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
@@ -146,27 +162,51 @@ export default function ScheduleManager({
         slotId,
         current: i + 1,
         total: fileList.length,
-        name: cleanTitle
+        name: cleanTitle,
+        percent: 0,
+        speedMBs: '0.00',
+        uploadedMB: '0.0',
+        fileSizeMB: (file.size / (1024 * 1024)).toFixed(1),
+        etaSeconds: 0
       });
 
       try {
-        const res = await fetch(`/api/schedule/${slotId}/upload-track`, {
-          method: 'POST',
+        const data = await uploadFileWithProgress({
+          url: `/api/schedule/${slotId}/upload-track`,
           headers: {
             'x-title': encodeURIComponent(cleanTitle),
             'x-filename': encodeURIComponent(file.name)
           },
-          body: file
+          file,
+          onProgress: (prog) => {
+            setUploadProgress({
+              slotId,
+              current: i + 1,
+              total: fileList.length,
+              name: cleanTitle,
+              ...prog
+            });
+          }
         });
-        const data = await res.json();
+
         if (data.schedule) {
           setSchedule(data.schedule);
         }
+        successCount++;
+        totalUploadedBytes += file.size;
       } catch (err) {
         console.error('Error uploading track to slot:', err);
+        alert(`Gagal mengunggah "${file.name}": ${err.message}`);
+        break;
       }
     }
     setUploadProgress(null);
+
+    if (successCount > 0) {
+      const mb = (totalUploadedBytes / (1024 * 1024)).toFixed(1);
+      setSlotActionMessage(`Berhasil mengunggah ${successCount} lagu (${mb} MB) ke slot jadwal!`);
+      setTimeout(() => setSlotActionMessage(null), 6000);
+    }
   };
 
   // Remove track from slot on server and disk
@@ -287,6 +327,23 @@ export default function ScheduleManager({
           </button>
         </div>
       </div>
+
+      {/* TOAST / ACTION NOTIFICATION */}
+      {slotActionMessage && (
+        <div className="bg-emerald-950/90 border border-emerald-500/60 rounded-xl px-4 py-2.5 text-xs text-emerald-200 flex items-center justify-between shadow-lg shadow-emerald-950/50 animate-in slide-in-from-top-1">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="font-semibold text-emerald-300">{slotActionMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSlotActionMessage(null)}
+            className="p-1 rounded text-emerald-400 hover:text-emerald-100 hover:bg-emerald-900/50"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Schedule Slot List */}
       <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto pr-0.5">
@@ -544,16 +601,55 @@ export default function ScheduleManager({
                       </span>
                     </div>
 
-                    {/* Upload Progress Indicator */}
+                    {/* Upload Progress Indicator with Speed, % & ETA */}
                     {uploadProgress && uploadProgress.slotId === slot.id && (
-                      <div className="p-2.5 rounded-lg bg-emerald-950/70 border border-emerald-500/60 flex items-center justify-between text-xs font-chakra text-emerald-200 animate-pulse">
-                        <span className="flex items-center gap-2 truncate mr-2">
-                          <Upload className="w-3.5 h-3.5 animate-bounce shrink-0" />
-                          <span>Mengunggah ({uploadProgress.current}/{uploadProgress.total}): &ldquo;{uploadProgress.name}&rdquo;...</span>
-                        </span>
-                        <span className="font-lcd text-cyan-300 shrink-0">
-                          {Math.round((uploadProgress.current / uploadProgress.total) * 100)}%
-                        </span>
+                      <div className="p-3 rounded-xl bg-gradient-to-r from-[#0d1f33] via-[#0b1626] to-[#0d1f33] border border-cyan-500/50 flex flex-col gap-2 shadow-lg shadow-cyan-950/40 animate-in slide-in-from-top-1">
+                        <div className="flex items-center justify-between text-xs flex-wrap gap-1.5">
+                          <span className="flex items-center gap-2 truncate mr-2 font-bold text-gray-200 flex-1 min-w-0">
+                            <Upload className="w-3.5 h-3.5 text-cyan-400 animate-bounce shrink-0" />
+                            <span className="truncate">
+                              Mengunggah ({uploadProgress.current}/{uploadProgress.total}): &ldquo;{uploadProgress.name}&rdquo;
+                            </span>
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/40 text-amber-300 font-lcd text-xs font-bold flex items-center gap-1 shadow-sm">
+                              <Zap className="w-3 h-3 fill-current text-amber-400" />
+                              {uploadProgress.speedMBs} MB/s
+                            </span>
+                            <span className="font-lcd text-emerald-400 font-bold text-sm min-w-[40px] text-right">
+                              {uploadProgress.percent}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Animated Progress Bar */}
+                        <div className="w-full bg-[#040810] h-2.5 rounded-full overflow-hidden border border-cyan-500/30 p-[1px]">
+                          <div
+                            className="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-full rounded-full transition-all duration-150 relative overflow-hidden"
+                            style={{ width: `${uploadProgress.percent}%` }}
+                          >
+                            <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[10px] text-gray-400 font-chakra">
+                          <span>
+                            Ukuran: <strong className="text-gray-200">{uploadProgress.uploadedMB} MB</strong> /{' '}
+                            <strong className="text-cyan-300">{uploadProgress.fileSizeMB} MB</strong>
+                          </span>
+                          <span>
+                            {uploadProgress.etaSeconds > 0 ? (
+                              <>
+                                Sisa waktu:{' '}
+                                <strong className="text-amber-300 font-mono">~{uploadProgress.etaSeconds} detik</strong>
+                              </>
+                            ) : uploadProgress.percent === 100 ? (
+                              <span className="text-emerald-400 font-bold animate-pulse">Menyimpan ke server...</span>
+                            ) : (
+                              <span className="text-gray-500">Mengirim audio...</span>
+                            )}
+                          </span>
+                        </div>
                       </div>
                     )}
 
