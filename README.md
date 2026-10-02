@@ -39,7 +39,15 @@ Aplikasi website radio streaming online profesional dan pemutar musik ala **Wina
 - Upload lagu langsung ke dalam slot program tertentu.
 - Data tersimpan secara persisten di server (`uploads/schedule_data.json`).
 
-### 4. 🌐 Direktori Stasiun Radio Online & Tuner
+### 4. 📚 Pustaka Musik Server (Server Media Library & Music Pool)
+- **Zero File Duplication**: 1 file lagu MP3 yang tersimpan di Proxmox dapat digunakan di berbagai slot jadwal tanpa menduplikasi ruang harddisk.
+- **Pemindai Otomatis Koleksi Server**: Memindai seluruh file MP3 di folder `uploads/` server secara otomatis. Jika Anda menyalin ratusan lagu via SFTP/FileZilla, lagu langsung otomatis muncul di dashboard.
+- **Audio Preview Player**: Tombol Play/Pause untuk mendengarkan cuplikan audio langsung dari pustaka sebelum dimasukkan ke jadwal.
+- **Batch Add (Pilih Banyak)**: Centang beberapa lagu sekaligus dan masukkan langsung ke slot acara yang dipilih dengan 1 klik.
+- **Status Keterpakaian**: Indikator apakah sebuah lagu sudah terdaftar di slot tertentu atau masih bebas.
+- **Pencegah Hapus Tak Sengaja**: Menampilkan peringatan proteksi jika file yang hendak dihapus masih terdaftar di jadwal siaran aktif.
+
+### 5. 🌐 Direktori Stasiun Radio Online & Tuner
 - Preset stasiun radio global berkualitas tinggi (ChillHop Lo-Fi, Synthwave 80s, Smooth Jazz, Club Dance EDM, Classic Rock, Acoustic Indie, Space Ambient).
 - Opsi menambahkan stasiun radio streaming kustom sendiri (Icecast / Shoutcast / MP3 streams).
 - Pencarian dan filter kategori stasiun.

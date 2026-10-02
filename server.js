@@ -704,20 +704,232 @@ app.delete('/api/schedule/:slotId/track/:trackId', (req, res) => {
   const trackToDelete = slot.tracks.find(t => t.id === trackId);
   slot.tracks = slot.tracks.filter(t => t.id !== trackId);
 
-  // Attempt to remove physical file from uploads folder if it belongs to this slot
-  if (trackToDelete && trackToDelete.url && trackToDelete.url.startsWith('/uploads/slot_')) {
-    try {
-      const fileName = path.basename(trackToDelete.url);
-      const fullPath = path.join(UPLOADS_DIR, fileName);
-      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-    } catch (e) {
-      console.warn('Could not delete audio file:', e.message);
+  // Attempt to remove physical file ONLY if not used in any other slot and not a shared library file
+  if (trackToDelete && trackToDelete.url) {
+    const isUsedElsewhere = programSchedule.some(s =>
+      s.tracks && s.tracks.some(t => t.id !== trackId && (t.url === trackToDelete.url || t.audioUrl === trackToDelete.url))
+    );
+    if (!isUsedElsewhere && trackToDelete.url.startsWith('/uploads/slot_')) {
+      try {
+        const fileName = path.basename(trackToDelete.url);
+        const fullPath = path.join(UPLOADS_DIR, fileName);
+        if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+      } catch (e) {
+        console.warn('Could not delete audio file:', e.message);
+      }
     }
   }
 
   saveScheduleToFile();
   broadcastScheduleUpdate();
   res.json({ success: true, schedule: programSchedule });
+});
+
+// ========================================================
+// 9. PUSTAKA MUSIK SERVER (SERVER MEDIA LIBRARY / MUSIC POOL)
+// ========================================================
+
+function scanMediaLibrary() {
+  const allowedExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.webm']);
+  const results = [];
+
+  function walkDir(dir, relativePrefix = '') {
+    if (!fs.existsSync(dir)) return;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          walkDir(path.join(dir, entry.name), path.join(relativePrefix, entry.name));
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (allowedExts.has(ext)) {
+            const fullPath = path.join(dir, entry.name);
+            const relPath = path.join(relativePrefix, entry.name).replace(/\\/g, '/');
+            const url = `/uploads/${relPath}`;
+            try {
+              const stats = fs.statSync(fullPath);
+              let cleanTitle = entry.name.replace(/\.[^/.]+$/, '');
+              cleanTitle = cleanTitle.replace(/^slot_\d+_\d+_/, '');
+              cleanTitle = cleanTitle.replace(/^lib_\d+_/, '');
+              cleanTitle = cleanTitle.replace(/_/g, ' ').trim();
+
+              const usedInSlots = [];
+              for (const s of programSchedule) {
+                if (s.tracks && s.tracks.some(t => t.url === url || t.audioUrl === url)) {
+                  usedInSlots.push({ id: s.id, title: s.title, startTime: s.startTime, endTime: s.endTime });
+                }
+              }
+
+              const duration = ext === '.mp3' ? getMp3Duration(fullPath) : 210;
+
+              results.push({
+                id: `lib-${Buffer.from(relPath).toString('base64url').substring(0, 20)}`,
+                fileName: entry.name,
+                relPath,
+                url,
+                audioUrl: url,
+                title: cleanTitle,
+                size: stats.size,
+                duration,
+                mtime: stats.mtimeMs,
+                usedInSlots
+              });
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Error walking uploads directory:', err.message);
+    }
+  }
+
+  walkDir(UPLOADS_DIR);
+  // Urutkan dari yang terbaru (mtime desc)
+  results.sort((a, b) => b.mtime - a.mtime);
+  return results;
+}
+
+// GET all audio files in Proxmox server uploads folder
+app.get('/api/library', (req, res) => {
+  try {
+    const tracks = scanMediaLibrary();
+    res.json({ success: true, count: tracks.length, tracks });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload MP3 directly to central media library
+app.post(
+  '/api/library/upload',
+  express.raw({ type: '*/*', limit: '100mb' }),
+  (req, res) => {
+    try {
+      const buffer = req.body;
+      if (!buffer || buffer.length === 0) {
+        return res.status(400).json({ error: 'Tidak ada data file audio yang diterima' });
+      }
+
+      const rawTitle = req.headers['x-title'] || 'Lagu Pustaka';
+      const rawFileName = req.headers['x-filename'] || 'audio.mp3';
+      const cleanTitle = decodeURIComponent(rawTitle);
+      const cleanFileName = decodeURIComponent(rawFileName);
+
+      const safeName = `lib_${Date.now()}_${cleanFileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const filePath = path.join(UPLOADS_DIR, safeName);
+      fs.writeFileSync(filePath, buffer);
+
+      const duration = getMp3Duration(filePath);
+      const trackObj = {
+        id: `lib-${Date.now()}`,
+        title: cleanTitle,
+        fileName: cleanFileName,
+        url: `/uploads/${safeName}`,
+        audioUrl: `/uploads/${safeName}`,
+        size: buffer.length,
+        duration,
+        mtime: Date.now(),
+        usedInSlots: []
+      };
+
+      console.log(`[Pustaka Server] Lagu baru ditambahkan ke koleksi: "${cleanTitle}"`);
+      res.json({ success: true, track: trackObj });
+    } catch (err) {
+      console.error('Error uploading track to library:', err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Add existing library tracks to a schedule slot (Zero File Duplication)
+app.post('/api/schedule/:slotId/add-library-tracks', (req, res) => {
+  const slotId = parseInt(req.params.slotId);
+  const slot = programSchedule.find(s => s.id === slotId);
+  if (!slot) {
+    return res.status(404).json({ error: 'Slot jadwal tidak ditemukan' });
+  }
+
+  const { tracks } = req.body;
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return res.status(400).json({ error: 'Tidak ada lagu yang dipilih dari pustaka' });
+  }
+
+  if (!slot.tracks) slot.tracks = [];
+  let addedCount = 0;
+
+  for (const t of tracks) {
+    const trackObj = {
+      id: `trk-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      title: t.title || 'Lagu Pustaka',
+      artist: t.artist || slot.dj || 'Penyiar Khanza.NET',
+      album: slot.title,
+      fileName: t.fileName || path.basename(t.url || ''),
+      url: t.url,
+      audioUrl: t.url,
+      size: t.size || 0,
+      duration: t.duration || 210,
+      kbps: '320 kbps',
+      khz: '44.1 kHz'
+    };
+    slot.tracks.push(trackObj);
+    addedCount++;
+  }
+
+  saveScheduleToFile();
+  broadcastScheduleUpdate();
+  console.log(`[Jadwal Slot "${slot.title}"] ${addedCount} lagu berhasil dimasukkan dari pustaka server.`);
+  res.json({ success: true, schedule: programSchedule, addedCount });
+});
+
+// Delete file physically from Proxmox server
+app.delete('/api/library/file', (req, res) => {
+  const { fileName, url, force } = req.body || {};
+  const target = fileName || (url ? path.basename(url) : null);
+  if (!target) {
+    return res.status(400).json({ error: 'Nama file atau URL tidak valid' });
+  }
+
+  const safeBase = path.basename(target);
+  const fullPath = path.join(UPLOADS_DIR, safeBase);
+
+  if (!fs.existsSync(fullPath)) {
+    return res.status(404).json({ error: 'File tidak ditemukan di server Proxmox' });
+  }
+
+  const fileUrl = `/uploads/${safeBase}`;
+  const usedSlots = [];
+  for (const s of programSchedule) {
+    if (s.tracks && s.tracks.some(t => t.url === fileUrl || t.audioUrl === fileUrl)) {
+      usedSlots.push(s.title);
+    }
+  }
+
+  if (usedSlots.length > 0 && !force) {
+    return res.status(409).json({
+      error: `File ini masih digunakan di slot: "${usedSlots.join('", "')}". Gunakan opsi force jika ingin menghapus permanen.`,
+      inUse: true,
+      usedSlots
+    });
+  }
+
+  // If force, unlink from all slots in programSchedule
+  if (usedSlots.length > 0 && force) {
+    for (const s of programSchedule) {
+      if (s.tracks) {
+        s.tracks = s.tracks.filter(t => t.url !== fileUrl && t.audioUrl !== fileUrl);
+      }
+    }
+    saveScheduleToFile();
+    broadcastScheduleUpdate();
+  }
+
+  try {
+    fs.unlinkSync(fullPath);
+    console.log(`[Pustaka Server] File "${safeBase}" berhasil dihapus permanen dari server.`);
+    res.json({ success: true, removedFromSlots: usedSlots.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Fallback to index.html for SPA routing (/pendengar, /penyiar, /studio, /)

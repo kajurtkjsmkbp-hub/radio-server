@@ -19,8 +19,10 @@ import {
   Play,
   Radio,
   Zap,
-  ListMusic
+  ListMusic,
+  Library
 } from 'lucide-react';
+import MediaLibraryModal from './MediaLibraryModal';
 
 export default function ScheduleManager({
   onLoadSlotToPlaylist,
@@ -34,7 +36,14 @@ export default function ScheduleManager({
   const [currentTime, setCurrentTime] = useState(new Date());
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null); // { slotId, current, total, name }
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [libraryTargetSlotId, setLibraryTargetSlotId] = useState(null);
   const fileInputRefs = useRef({});
+
+  const openLibraryModalForSlot = (slotId) => {
+    setLibraryTargetSlotId(slotId);
+    setIsLibraryOpen(true);
+  };
 
   // Clock tick every 10 seconds for real-time active slot detection
   useEffect(() => {
@@ -242,6 +251,20 @@ export default function ScheduleManager({
           <span className="text-[10px] font-lcd text-cyan-400 px-2 py-0.5 rounded bg-[#0a0d14] border border-cyan-500/30">
             {currentTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} WIB
           </span>
+
+          {/* Open Media Library Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryTargetSlotId(null);
+              setIsLibraryOpen(true);
+            }}
+            className="winamp-btn px-2.5 py-1 rounded text-[10px] font-chakra text-amber-300 hover:text-white flex items-center gap-1.5 font-bold border-amber-500/50 shadow-sm shadow-amber-500/10 cursor-pointer"
+            title="Buka Pustaka Musik Server Proxmox untuk melihat dan memilih koleksi MP3"
+          >
+            <Library className="w-3 h-3 text-amber-400" />
+            <span>PUSTAKA SERVER</span>
+          </button>
 
           {/* Add Slot Button */}
           <button
@@ -492,6 +515,16 @@ export default function ScheduleManager({
                           UPLOAD FILE MUSIK (MP3)
                         </button>
 
+                        <button
+                          type="button"
+                          onClick={() => openLibraryModalForSlot(slot.id)}
+                          className="winamp-btn px-3 py-1.5 rounded-lg text-xs font-chakra font-bold text-amber-300 hover:text-white flex items-center gap-1.5 border-amber-500/50 transition-all cursor-pointer"
+                          title="Pilih lagu dari koleksi server Proxmox tanpa perlu upload ulang"
+                        >
+                          <Library className="w-3.5 h-3.5" />
+                          PILIH DARI PUSTAKA
+                        </button>
+
                         {slot.tracks && slot.tracks.length > 0 && (
                           <button
                             type="button"
@@ -582,12 +615,28 @@ export default function ScheduleManager({
                         </div>
                       </div>
                     ) : (
-                      <div className="text-center py-5 bg-[#090d16] rounded-xl border border-dashed border-gray-800 text-gray-400 text-xs font-chakra flex flex-col items-center gap-1.5">
+                      <div className="text-center py-5 bg-[#090d16] rounded-xl border border-dashed border-gray-800 text-gray-400 text-xs font-chakra flex flex-col items-center gap-2">
                         <Music className="w-5 h-5 text-gray-500" />
                         <p>Belum ada file musik untuk slot ini.</p>
-                        <p className="text-[10px] text-gray-500">
-                          Klik tombol <strong className="text-emerald-400">UPLOAD FILE MUSIK</strong> di atas untuk menambahkan MP3.
-                        </p>
+                        <div className="flex items-center gap-2 flex-wrap justify-center mt-1">
+                          <button
+                            type="button"
+                            onClick={() => openLibraryModalForSlot(slot.id)}
+                            className="winamp-btn px-3 py-1 rounded-lg text-xs font-bold text-amber-300 border-amber-500/50 flex items-center gap-1.5 cursor-pointer shadow-sm shadow-amber-950"
+                          >
+                            <Library className="w-3.5 h-3.5" />
+                            PILIH DARI PUSTAKA SERVER
+                          </button>
+                          <span className="text-[10px] text-gray-500">atau</span>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRefs.current[slot.id]?.click()}
+                            className="winamp-btn px-3 py-1 rounded-lg text-xs font-bold text-emerald-300 border-emerald-500/50 flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            Upload MP3 Baru
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -623,6 +672,20 @@ export default function ScheduleManager({
           formatDuration={formatDuration}
         />
       )}
+
+      {/* Server Media Library Modal */}
+      <MediaLibraryModal
+        isOpen={isLibraryOpen}
+        onClose={() => setIsLibraryOpen(false)}
+        targetSlotId={libraryTargetSlotId}
+        schedule={schedule}
+        onTracksAdded={(updatedSchedule) => setSchedule(updatedSchedule)}
+        onLoadTrackToWinamp={(track) => {
+          if (onLoadSlotToPlaylist) {
+            onLoadSlotToPlaylist({ title: 'Pustaka Proxmox', tracks: [track] }, false);
+          }
+        }}
+      />
     </div>
   );
 }
