@@ -954,6 +954,88 @@ app.delete('/api/library/file', (req, res) => {
   }
 });
 
+// Batch delete multiple files physically from Proxmox server
+app.post('/api/library/batch-delete', (req, res) => {
+  const { fileNames, force } = req.body || {};
+  if (!Array.isArray(fileNames) || fileNames.length === 0) {
+    return res.status(400).json({ error: 'Daftar nama file kosong' });
+  }
+
+  let deletedCount = 0;
+  let unlinkedCount = 0;
+
+  for (const rawName of fileNames) {
+    const safeBase = path.basename(rawName);
+    const fullPath = path.join(UPLOADS_DIR, safeBase);
+    const fileUrl = `/uploads/${safeBase}`;
+
+    // Unlink from schedule slots
+    for (const s of programSchedule) {
+      if (s.tracks) {
+        const initCount = s.tracks.length;
+        s.tracks = s.tracks.filter(t => t.url !== fileUrl && t.audioUrl !== fileUrl && t.fileName !== safeBase);
+        unlinkedCount += (initCount - s.tracks.length);
+      }
+    }
+
+    if (fs.existsSync(fullPath)) {
+      try {
+        fs.unlinkSync(fullPath);
+        deletedCount++;
+      } catch (e) {
+        console.warn('Gagal menghapus file:', safeBase, e.message);
+      }
+    }
+  }
+
+  if (unlinkedCount > 0) {
+    saveScheduleToFile();
+    broadcastScheduleUpdate();
+  }
+
+  console.log(`[Pustaka Server] Batch delete: ${deletedCount} file berhasil dihapus dari harddisk Proxmox.`);
+  res.json({ success: true, deletedCount, unlinkedCount, schedule: programSchedule });
+});
+
+// Purge/clean ALL audio files from uploads folder and reset slot playlists
+app.post('/api/library/purge-all', (req, res) => {
+  const { confirmation } = req.body || {};
+  if (confirmation !== 'HAPUS_SEMUA') {
+    return res.status(400).json({ error: 'Konfirmasi tidak sesuai. Ketik "HAPUS_SEMUA" untuk melanjutkan.' });
+  }
+
+  const allowedExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.webm']);
+  let deletedCount = 0;
+
+  try {
+    const entries = fs.readdirSync(UPLOADS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (allowedExts.has(ext)) {
+          const fullPath = path.join(UPLOADS_DIR, entry.name);
+          try {
+            fs.unlinkSync(fullPath);
+            deletedCount++;
+          } catch (e) {}
+        }
+      }
+    }
+
+    // Reset all tracks in programSchedule
+    for (const s of programSchedule) {
+      s.tracks = [];
+    }
+    saveScheduleToFile();
+    broadcastScheduleUpdate();
+
+    console.log(`[Pustaka Server] Purge All: ${deletedCount} file MP3 berhasil dihapus bersih dari harddisk Proxmox.`);
+    res.json({ success: true, deletedCount, schedule: programSchedule });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Fallback to index.html for SPA routing (/pendengar, /penyiar, /studio, /)
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'dist', 'index.html');

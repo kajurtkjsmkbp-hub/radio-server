@@ -42,6 +42,9 @@ export default function MediaLibraryModal({
   const [uploadStatus, setUploadStatus] = useState('');
   const [actionMessage, setActionMessage] = useState(null);
   const [deleteConfirmFile, setDeleteConfirmFile] = useState(null);
+  const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
+  const [purgeInput, setPurgeInput] = useState('');
 
   const previewAudioRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -225,6 +228,56 @@ export default function MediaLibraryModal({
     }
   };
 
+  // Batch delete selected tracks from harddisk
+  const handleConfirmBatchDelete = async () => {
+    const selectedTracks = tracks.filter(t => selectedTrackIds.has(t.id));
+    const fileNames = selectedTracks.map(t => t.fileName);
+    try {
+      const res = await fetch('/api/library/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileNames, force: true })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onTracksAdded && data.schedule) {
+          onTracksAdded(data.schedule);
+        }
+        showActionToast(`${data.deletedCount} file berhasil dihapus permanen dari harddisk.`);
+        setSelectedTrackIds(new Set());
+        setShowBatchDeleteModal(false);
+        fetchLibraryTracks();
+      }
+    } catch (err) {
+      console.error('Error batch deleting files:', err);
+    }
+  };
+
+  // Purge/clean all audio files from Proxmox harddisk
+  const handleConfirmPurgeAll = async () => {
+    if (purgeInput !== 'HAPUS_SEMUA') return;
+    try {
+      const res = await fetch('/api/library/purge-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: 'HAPUS_SEMUA' })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onTracksAdded && data.schedule) {
+          onTracksAdded(data.schedule);
+        }
+        showActionToast(`Seluruh (${data.deletedCount}) file audio berhasil dihapus bersih dari harddisk.`);
+        setSelectedTrackIds(new Set());
+        setShowPurgeModal(false);
+        setPurgeInput('');
+        fetchLibraryTracks();
+      }
+    } catch (err) {
+      console.error('Error purging all files:', err);
+    }
+  };
+
   const showActionToast = (msg) => {
     setActionMessage(msg);
     setTimeout(() => setActionMessage(null), 3500);
@@ -397,8 +450,24 @@ export default function MediaLibraryModal({
               title="Upload MP3 langsung ke koleksi pustaka Proxmox"
             >
               <Upload className="w-3.5 h-3.5" />
-              <span>{uploading ? 'Mengunggah...' : '+ UPLOAD MP3 KE PUSTAKA'}</span>
+              <span>{uploading ? 'Mengunggah...' : '+ UPLOAD MP3'}</span>
             </button>
+
+            {/* Purge All Files Button */}
+            {tracks.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPurgeInput('');
+                  setShowPurgeModal(true);
+                }}
+                className="winamp-btn px-2.5 py-1.5 rounded-xl text-xs font-bold text-rose-400 hover:text-rose-200 border-rose-500/30 hover:border-rose-500/60 flex items-center gap-1.5 cursor-pointer"
+                title="Hapus bersih seluruh file audio dari harddisk Proxmox"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">KOSONGKAN SEMUA ({tracks.length})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -420,13 +489,13 @@ export default function MediaLibraryModal({
                 {selectedTrackIds.size}
               </span>
               <span className="text-xs font-bold text-cyan-200">
-                Lagu Terpilih untuk Dimasukkan
+                Lagu Terpilih
               </span>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5 flex-wrap">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-300">Target Slot:</span>
+                <span className="text-xs text-gray-300">Target:</span>
                 <select
                   value={selectedSlotId}
                   onChange={(e) => setSelectedSlotId(e.target.value)}
@@ -446,10 +515,20 @@ export default function MediaLibraryModal({
                   const selectedTracks = tracks.filter(t => selectedTrackIds.has(t.id));
                   handleAddTracksToSlot(selectedTracks, selectedSlotId);
                 }}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-lg shadow-emerald-950/60 transition-all cursor-pointer"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-lg shadow-emerald-950/60 transition-all cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                <span>MASUKKAN {selectedTrackIds.size} LAGU KE SLOT</span>
+                <span>+ MASUKKAN KE SLOT ({selectedTrackIds.size})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteModal(true)}
+                className="bg-rose-950/90 hover:bg-rose-900 border border-rose-500/60 text-rose-300 hover:text-white font-bold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-lg transition-all cursor-pointer"
+                title="Hapus file-file terpilih dari harddisk Proxmox secara permanen"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>HAPUS DARI HARDDISK ({selectedTrackIds.size})</span>
               </button>
 
               <button
@@ -693,6 +772,88 @@ export default function MediaLibraryModal({
                 className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs"
               >
                 Hapus Permanen Dari Server
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION MODAL FOR BATCH DELETING FILES */}
+      {showBatchDeleteModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/90 animate-in fade-in">
+          <div className="bg-[#0f1422] border border-rose-500/50 rounded-2xl p-5 max-w-md w-full shadow-2xl text-chakra">
+            <div className="flex items-center gap-3 text-rose-400 mb-3">
+              <Trash2 className="w-6 h-6 shrink-0" />
+              <h4 className="font-bold text-base text-white">Hapus {selectedTrackIds.size} File Dari Harddisk?</h4>
+            </div>
+            <p className="text-xs text-gray-300 mb-3">
+              Tindakan ini akan <strong>menghapus secara fisik {selectedTrackIds.size} file MP3 terpilih</strong> dari penyimpanan harddisk server Proxmox, dan otomatis melepaskannya dari jadwal siaran.
+            </p>
+            <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/30 text-[11px] text-rose-300 mb-4 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>File yang telah dihapus permanen dari harddisk tidak dapat dikembalikan.</span>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteModal(false)}
+                className="px-3 py-1.5 rounded-lg border border-gray-700 text-xs text-gray-300 hover:text-white cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBatchDelete}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-lg shadow-rose-950/60"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Hapus {selectedTrackIds.size} File Sekarang</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION MODAL FOR PURGING ALL FILES */}
+      {showPurgeModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/95 animate-in fade-in">
+          <div className="bg-[#12080d] border border-rose-600/70 rounded-2xl p-6 max-w-md w-full shadow-2xl text-chakra">
+            <div className="flex items-center gap-3 text-rose-500 mb-3">
+              <AlertTriangle className="w-7 h-7 shrink-0 text-rose-400 animate-pulse" />
+              <h4 className="font-bold text-lg text-white">KOSONGKAN SELURUH HARDDISK?</h4>
+            </div>
+            <p className="text-xs text-gray-300 mb-2 leading-relaxed">
+              Anda akan <strong>menghapus seluruh {tracks.length} file audio MP3</strong> dari folder <code className="text-rose-400 bg-black/60 px-1 py-0.5 rounded">/uploads/</code> di server Proxmox dan mengosongkan seluruh antrian jadwal siaran.
+            </p>
+            <p className="text-[11px] text-gray-400 mb-3">
+              Ketik kata <strong className="text-white bg-rose-950 border border-rose-500/50 px-1.5 py-0.5 rounded font-mono">HAPUS_SEMUA</strong> di bawah ini untuk mengonfirmasi:
+            </p>
+            <input
+              type="text"
+              value={purgeInput}
+              onChange={(e) => setPurgeInput(e.target.value)}
+              placeholder="Ketik HAPUS_SEMUA di sini..."
+              className="w-full bg-black/80 border border-rose-500/50 rounded-xl px-3 py-2 text-xs text-rose-200 placeholder-gray-600 focus:outline-none focus:border-rose-400 font-mono mb-4"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPurgeModal(false);
+                  setPurgeInput('');
+                }}
+                className="px-3.5 py-1.5 rounded-lg border border-gray-700 text-xs text-gray-300 hover:text-white cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={purgeInput !== 'HAPUS_SEMUA'}
+                onClick={handleConfirmPurgeAll}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-lg shadow-rose-950/80"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Kosongkan Seluruh Lagu</span>
               </button>
             </div>
           </div>
