@@ -335,6 +335,7 @@ export default function ListenerPortal({ theme = 'classic' }) {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const listenerId = getListenerClientId();
       ws = new WebSocket(`${protocol}//${window.location.host}/ws?role=listener&clientId=${listenerId}`);
+      ws.binaryType = 'arraybuffer'; // Receive binary mic PCM as ArrayBuffer for zero-copy decoding
       ws.onopen = () => {
         try {
           ws.send(JSON.stringify({ type: 'REGISTER_ROLE', role: 'listener' }));
@@ -342,6 +343,25 @@ export default function ListenerPortal({ theme = 'classic' }) {
       };
 
       ws.onmessage = (e) => {
+        // Binary message = mic PCM audio (0xAA55 magic header + Int16 samples)
+        if (e.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(e.data);
+          if (bytes.length >= 4 && bytes[0] === 0xAA && bytes[1] === 0x55) {
+            const srCode = (bytes[2] << 8) | bytes[3];
+            const sampleRate = srCode * 100;
+            const int16 = new Int16Array(e.data, 4);
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) {
+              float32[i] = int16[i] / 32767;
+            }
+            setDjMicActive(true);
+            try {
+              audioEngine.playPcmChunk(float32, sampleRate);
+            } catch (err) {}
+          }
+          return;
+        }
+
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'RADIO_STATE' && msg.data) {

@@ -481,7 +481,19 @@ wss.on('connection', (ws, req) => {
     updateOnlineListeners();
   });
 
-  ws.on('message', (data) => {
+  ws.on('message', (data, isBinary) => {
+    // Binary messages are mic PCM audio — forward directly to all other clients without JSON overhead
+    if (isBinary || (Buffer.isBuffer(data) && data.length >= 4 && data[0] === 0xAA && data[1] === 0x55)) {
+      wss.clients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(data, { binary: true });
+          } catch (e) {}
+        }
+      });
+      return;
+    }
+
     try {
       const msg = JSON.parse(data.toString());
 
@@ -531,7 +543,7 @@ wss.on('connection', (ws, req) => {
           }
         });
       } else {
-        // Broadcast mic audio, jingles, ducking, etc. to all other clients
+        // Broadcast mic status, jingles, ducking, etc. to all other clients
         const payload = JSON.stringify(msg);
         wss.clients.forEach((client) => {
           if (client !== ws && client.readyState === WebSocket.OPEN) {

@@ -94,6 +94,40 @@ class AudioEngine {
     }
   }
 
+  // Send raw PCM mic audio as compact binary via WebSocket for ultra-low latency
+  // Binary format: [0xAA, 0x55] (2-byte magic) + [sampleRate high byte, sampleRate low byte] + Int16 PCM samples
+  // This is ~10x smaller than JSON Array encoding of Float32 samples
+  broadcastBinaryPcm(float32Samples, sampleRate) {
+    const int16 = new Int16Array(float32Samples.length);
+    for (let i = 0; i < float32Samples.length; i++) {
+      int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32Samples[i] * 32767)));
+    }
+    // Header: 2 bytes magic + 2 bytes sampleRate/100 (e.g. 48000 → 480)
+    const header = new Uint8Array(4);
+    header[0] = 0xAA;
+    header[1] = 0x55;
+    const srCode = Math.round(sampleRate / 100);
+    header[2] = (srCode >> 8) & 0xFF;
+    header[3] = srCode & 0xFF;
+
+    const packet = new Uint8Array(4 + int16.byteLength);
+    packet.set(header, 0);
+    packet.set(new Uint8Array(int16.buffer), 4);
+
+    // Send via WebSocket as binary
+    if (this.ws && this.ws.readyState === 1) {
+      try {
+        this.ws.send(packet.buffer);
+      } catch (e) {}
+    }
+    // BroadcastChannel: send as structured clone (same-tab, zero-copy)
+    if (this.liveChannel) {
+      try {
+        this.liveChannel.postMessage({ type: 'MIC_PCM', pcm: Array.from(float32Samples), sampleRate });
+      } catch (e) {}
+    }
+  }
+
   // Play real-time raw PCM float32 samples from DJ's mic on listener side
   playPcmChunk(pcmData, sampleRate) {
     this.init();
@@ -146,10 +180,10 @@ class AudioEngine {
       source.connect(this.listenerVoiceGain);
 
       const now = this.ctx.currentTime;
-      const targetJitter = 0.07; // 70ms target jitter window
+      const targetJitter = 0.03; // 30ms target jitter window (reduced from 70ms for lower latency)
 
-      // Check if queue has run dry (pause between sentences > 90ms)
-      if (!this.nextPcmTime || (now - this.nextPcmTime) > 0.09) {
+      // Check if queue has run dry (pause between sentences > 60ms)
+      if (!this.nextPcmTime || (now - this.nextPcmTime) > 0.06) {
         this.nextPcmTime = now + targetJitter;
       } else if (this.nextPcmTime < now) {
         // Mild network drift: schedule at current time immediately without inserting silence gap
@@ -638,10 +672,10 @@ class AudioEngine {
 
     try {
       let silenceHangover = 0;
-      const HANGOVER_MAX = 15; // ~700ms hangover to prevent word cutoffs
+      const HANGOVER_MAX = 25; // ~530ms hangover at 1024 buffer to prevent word cutoffs
       let wasActive = false; // Track silence→voice transition for fade-in
 
-      this.micProcessor = this.ctx.createScriptProcessor(2048, 1, 1);
+      this.micProcessor = this.ctx.createScriptProcessor(1024, 1, 1);
       this.micProcessor.onaudioprocess = (e) => {
         if (!this.micActive) return;
         const inputData = e.inputBuffer.getChannelData(0);
@@ -687,11 +721,8 @@ class AudioEngine {
             }
           }
 
-          this.broadcastLiveEvent({
-            type: 'MIC_PCM',
-            pcm: Array.from(samples),
-            sampleRate: this.ctx.sampleRate
-          });
+          // Use efficient binary encoding instead of JSON for ~10x smaller payload and lower latency
+          this.broadcastBinaryPcm(samples, this.ctx.sampleRate);
         }
 
         wasActive = isActive;
