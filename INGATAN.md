@@ -27,7 +27,8 @@ RADIO-ONLINE-PART2/
 ├── package.json                       # Dependencies & build scripts
 ├── uploads/                           # Penyimpanan audio MP3 & data persisten jadwal di disk lokal
 │   ├── schedule_data.json             # Database JSON jadwal siaran & daftar lagu per slot
-│   └── slot_*.mp3                     # File audio MP3 asli yang diunggah per slot jadwal siaran
+│   ├── slot_*.mp3                     # File audio MP3 asli yang diunggah per slot jadwal siaran
+│   └── lib_*.mp3                      # File audio MP3 koleksi pustaka terpusat (server media library)
 ├── public/
 │   ├── sfx/                           # File audio asli untuk soundboard / jingle cart wall
 │   │   ├── applause.mp3               # Suara tepuk tangan nyata manusia (real human crowd)
@@ -47,6 +48,7 @@ RADIO-ONLINE-PART2/
 │   │   ├── EqualizerWindow.jsx        # 10-band equalizer audio Winamp (+12dB s/d -12dB)
 │   │   ├── ListenerChat.jsx           # Live shoutbox, pesan teks real-time, animasi emoji reaksi mengambang
 │   │   ├── ListenerPortal.jsx         # Tampilan pendengar, full theme skin, vinyl player, tab HP, sticky dock
+│   │   ├── MediaLibraryModal.jsx      # Modal manajemen pustaka musik server, filter status, preview, delete, batch assign
 │   │   ├── Navbar.jsx                 # Header bar navigasi, status ON-AIR, selector skin tema, jam digital
 │   │   ├── PlaylistWindow.jsx         # Manajemen lagu playlist Winamp
 │   │   ├── RadioStations.jsx          # Daftar stasiun radio preset
@@ -55,7 +57,8 @@ RADIO-ONLINE-PART2/
 │   │   └── WinampPlayer.jsx           # Deck utama Winamp (Play, Pause, Stop, Seekbar, seek sync, Mute Spk)
 │   └── utils/
 │       ├── audioEngine.js             # Jantung pemrosesan audio (Web Audio graph, seek sync, Mic relay, Auto-Ducking)
-│       └── stationData.js             # Data stasiun radio, 16 sound effect hotkeys (1-0, Q-Y), lagu demo awal
+│       ├── stationData.js             # Data stasiun radio, 16 sound effect hotkeys (1-0, Q-Y), lagu demo awal
+│       └── uploader.js                # Helper upload file berkemajuan (MB/s, ETA, %) & multi-chunk >25MB bypass Cloudflare
 ```
 
 ---
@@ -231,6 +234,113 @@ RADIO-ONLINE-PART2/
 
 ---
 
+### N. Pustaka Media Server Terpusat & Kolam Musik (`MediaLibraryModal.jsx` & `/api/library`)
+* **Masalah**: Sebelumnya lagu hanya bisa diunggah langsung ke slot jadwal tertentu. Jika satu lagu ingin dipakai di beberapa jadwal siaran berbeda, penyiar harus mengunggah ulang file yang sama berkali-kali sehingga terjadi pemborosan kapasitas harddisk server dan resiko inkonsistensi nama file.
+* **Solusi & Implementasi**:
+  1. **Sentralisasi Penyimpanan Audio (`/uploads`)**:
+     * Seluruh lagu disimpan dalam satu kolam fisik tunggal di folder `uploads/` (`lib_*` untuk upload pustaka dan `slot_*` untuk upload slot).
+     * Endpoint `GET /api/library` secara dinamis memindai seluruh file MP3 dan memeriksa referensi pemakaiannya di `schedule_data.json`.
+  2. **Antarmuka Pustaka Musik Modern (`MediaLibraryModal.jsx`)**:
+     * Dibuka lewat tombol *"PUSTAKA SERVER"* di panel navigasi atas atau di pengelola jadwal.
+     * Dilengkapi fitur **Live Audio Preview**: penyiar dapat memutar, menjeda, dan mengecek isi lagu sebelum memasukkannya ke dalam jadwal siaran.
+     * **Badge Status Jadwal & Tombol Unlink Cepat (`[X]`)**: Setiap lagu menampilkan badge slot mana saja yang sedang menggunakannya. Penyiar dapat langsung menekan tanda silang merah `[X]` pada badge tersebut untuk melepas lagu dari slot tanpa menghapus file fisiknya dari disk.
+     * **Multi-Select & Batch Assign**: Penyiar dapat mencentang beberapa lagu sekaligus lalu memasukkannya ke slot siaran pilihan dalam 1 klik (*Zero-Duplication*).
+     * **Filter & Pencarian**: Filter kategori (*Semua*, *Terpakai di Jadwal*, *Bebas / Belum Dipakai*) serta input pencarian real-time berdasarkan judul atau nama file.
+
+---
+
+### O. Penghapusan File dari Harddisk & Optimasi Performa Cache Durasi (`18cb5ce`, `dd37e28`)
+* **Fitur Manajemen Penghapusan Fisik File**:
+  1. **Hapus Tunggal**: Tombol tong sampah pada baris lagu menghapus file MP3 langsung dari harddisk server (`DELETE /api/library/file/:id`).
+  2. **Hapus Terpilih (Batch Delete)**: Penyiar dapat mencentang banyak lagu lalu menekan tombol *"Hapus Terpilih"* (`POST /api/library/delete-batch`).
+  3. **Bersihkan Seluruh Harddisk (Purge All)**: Tombol darurat untuk menghapus seluruh file audio dari disk server dengan dialog verifikasi ganda yang aman (`DELETE /api/library/purge-all`).
+  4. **Sinkronisasi Otomatis ke Jadwal**: Saat file fisik dihapus dari disk, sistem di `server.js` otomatis membersihkan entri lagu tersebut dari seluruh slot program di `schedule_data.json` dan menyiarkan pembaruan via `broadcastScheduleUpdate()`.
+* **Optimasi Kecepatan (In-Memory Duration Cache)**:
+  * Pemindaian ribuan frame header MP3 (`getMp3Duration`) dari disk setiap kali endpoint library dipanggil menyebabkan lag/perlambatan.
+  * Diimplementasikan `libraryDurationCache` berbasis memori (`fileName + mtime`). File yang sudah pernah dibaca durasinya tidak akan dibaca ulang dari disk, membuat response modal pustaka terbuka instan dalam hitungan milidetik.
+  * Penanganan UI React dioptimalkan agar tabel daftar lagu tidak di-*unmount* saat melakukan sinkronisasi background, mencegah efek berkedip (*no flicker*).
+
+---
+
+### P. Sistem Upload Berkemajuan Real-time & Multi-Chunk Bypassing Cloudflare Tunnel (`uploader.js`, `7e345c4`, `f4c8a39`)
+* **Masalah**:
+  1. Upload file MP3 berukuran besar (seperti Full Album 50MB s/d 208MB+) melalui domain publik Cloudflare Tunnel (`radio2.iphoenkz.my.id`) selalu gagal dengan timeout / *HTTP 413 Payload Too Large* karena Cloudflare Free Tier membatasi *request body* maksimal 100MB per HTTP request.
+  2. Browser native `fetch()` tidak mendukung callback pemantauan progress upload, sehingga pengguna tidak tahu berapa persen yang sudah terkirim, berapa kecepatan transfernya, dan berapa lama sisa waktunya.
+* **Solusi & Implementasi**:
+  1. **Modul Pengunggah Cerdas [`uploader.js`](file:///C:/Users/iphoenkz/Music/RADIO-ONLINE-PART2/src/utils/uploader.js)**:
+     * Menggunakan `XMLHttpRequest` dengan hook `xhr.upload.onprogress`.
+     * Menghitung kecepatan upload riil (`MB/s`), sisa waktu transfer (*ETA countdown*), dan persentase progress (0%–100%).
+  2. **Teknologi Multi-Chunk Otomatis (>25MB)**:
+     * File > 25MB otomatis diiris (*sliced*) menjadi potongan-potongan berukuran 25MB di sisi browser.
+     * Potongan dikirim bertahap ke server membawa header `x-upload-id`, `x-chunk-index`, dan `x-chunk-total`.
+     * Server mengumpulkan potongan ke dalam file sementara `temp_chunk_<uploadId>.part` via `fs.appendFileSync()`.
+     * Saat potongan terakhir tiba, file sementara di-rename menjadi file final dan durasi MP3 dihitung dengan akurat.
+     * Batas upload Express dinaikkan ke `500mb` (`express.raw({ limit: '500mb' })`).
+     * Sukses menembus batasan 100MB Cloudflare Tunnel tanpa perlu konfigurasi berbayar.
+  3. **Modal Konfirmasi File Besar (Custom React Modal)**:
+     * Seluruh panggilan dialog native `window.confirm()` yang kaku dan usang diganti dengan modal React kustom bertema Winamp Amber Neon.
+     * Memberikan rincian nama file, ukuran dalam MB, penjelasan teknologi multi-chunk 25MB, dan tombol aksi yang jelas (*Lanjutkan Unggah* / *Batal*).
+
+---
+
+### Q. Optimasi Latensi & Pengiriman Mikrofon Penyiar via Binary Int16 PCM (`40d28f3`)
+* **Masalah**:
+  * Suara mikrofon penyiar mengalami delay sangat parah di pendengar dan terkadang tersendat atau tidak terdengar sama sekali.
+* **Akar Masalah (Root Cause)**:
+  1. Data audio mic dari `ScriptProcessor` berupa array Float32 (2048 sample) sebelumnya diubah menjadi array JSON biasa (`Array.from(samples)`). Setiap 46 milidetik browser mengirim string JSON raksasa berukuran **~40 KB per chunk**.
+  2. Server WebSocket harus melakukan `JSON.parse()` dan `JSON.stringify()` ulang untuk setiap paket audio mic sebelum meneruskannya ke pendengar. Hal ini menyebabkan penumpukan antrean (*buffer bloat*), konsumsi CPU tinggi, dan latensi jaringan membengkak hingga ratusan milidetik.
+* **Solusi & Implementasi**:
+  1. **Format Paket Binary Kompak**:
+     * Pengiriman PCM diubah menjadi binary ArrayBuffer murni: 4-byte header (`[0xAA, 0x55]` magic bytes + 2-byte sample rate code) diikuti data raw Int16 PCM.
+     * Ukuran payload turun drastis dari **~40 KB menjadi ~2 KB per chunk (10x lebih hemat bandwidth)**.
+  2. **Zero-Overhead Forwarding di Server (`server.js`)**:
+     * Handler WebSocket server mendeteksi paket binary (`data[0] === 0xAA && data[1] === 0x55`) dan langsung meneruskannya ke seluruh client yang terhubung via `client.send(data, { binary: true })` tanpa melalui proses `JSON.parse()`.
+  3. **Pemangkasan Latensi Web Audio**:
+     * Buffer `ScriptProcessor` diturunkan dari 2048 ke 1024 sample (durasi proses internal turun dari 46ms ke ~21ms).
+     * Jitter buffer di pendengar dikurangi dari 70ms ke 30ms.
+     * Di sisi pendengar (`ListenerPortal.jsx`), WebSocket diset `ws.binaryType = 'arraybuffer'`, langsung didecode ke Float32Array dan dialirkan ke `playPcmChunk`.
+
+---
+
+### R. Analisis & Catatan Penanganan Suara Mikrofon "Robot" / Audio Gap Playback
+* **Gejala / Laporan**:
+  * Setelah optimasi latensi biner, suara mic terdengar lebih cepat sampai namun terdengar bergetar / patah-patah layaknya suara "robot".
+* **Diagnosa Teknis**:
+  * Saat ini, setiap chunk 21ms dimainkan dengan membuat instance `AudioBufferSourceNode` baru yang dijadwalkan pada `this.nextPcmTime = now + targetJitter`.
+  * Ketika koneksi internet mengalami fluktuasi kecil (jitter mikro beberapa milidetik), paket audio tiba terlambat dari waktu jadwal playout. Terjadi *buffer underflow* (jeda senyap mikro) yang berulang cepat puluhan kali per detik, menghasilkan distorsi modulasi frekuensi mirip efek *Ring Modulator* atau suara robot.
+* **Arsitektur Solusi Ideal (VoIP Continuous Ring Buffer)**:
+  * Mengganti pembuatan `AudioBufferSourceNode` per-chunk dengan **Circular Ring Buffer (Jitter Buffer Berkelanjutan)** menggunakan `ScriptProcessor` atau `AudioWorkletNode` di sisi pendengar:
+    - Paket PCM biner yang masuk dimasukkan ke antrean ring buffer.
+    - Loop audio output membaca data secara kontinyu dari ring buffer.
+    - Jika terjadi jeda paket mikro, diterapkan interpolasi halus / fade-smoothing untuk mencegah bunyi klik atau nada robotik.
+
+---
+
+### S. Panduan Infrastruktur Proxmox LXC & Cloudflare Tunnel
+* **Konfigurasi Produksi**:
+  * Server berjalan di dalam kontainer Proxmox LXC Debian/Ubuntu pada path `/opt/radio-server`.
+  * Node server dijalankan menggunakan process manager `pm2`:
+    ```bash
+    pm2 start server.js --name "radio-server"
+    pm2 save
+    ```
+  * Dipublikasikan ke internet menggunakan Cloudflare Tunnel:
+    * Domain: `radio2.iphoenkz.my.id`
+    * Ingress Rule mengarah ke HTTP lokal: `http://localhost:3000`.
+* **Akses Transfer File (WinSCP / SFTP)**:
+  * **PENTING**: Cloudflare Tunnel hanya mendukung protokol HTTP/HTTPS. Upaya koneksi SFTP/SSH ke `radio2.iphoenkz.my.id:22` akan selalu mengalami *Connection timed out*.
+  * Untuk menggunakan WinSCP/FileZilla, sambungkan langsung ke **IP Lokal Proxmox LXC** (contoh: `192.168.1.xxx:22`) melalui jaringan lokal / LAN yang sama.
+* **Prosedur Pembaruan Aplikasi Tanpa Kehilangan Data (Zero Data-Loss Update)**:
+  ```bash
+  cd /opt/radio-server
+  git pull origin main
+  npm run build
+  pm2 restart radio-server
+  ```
+  *(Folder `uploads/` berisi MP3 dan database jadwal `schedule_data.json` di-ignore oleh Git sehingga data siaran dan file lagu di harddisk tidak akan terhapus saat update).*
+
+---
+
 ## 🔒 5. Catatan Kunci untuk Sesi Mendatang
 
 * File [`server.js`](file:///C:/Users/iphoenkz/Music/RADIO-ONLINE-PART2/server.js) melayani baik file statis dari folder `dist/` maupun WebSocket endpoint di `/ws`.
@@ -238,5 +348,9 @@ RADIO-ONLINE-PART2/
 * `audioEngine.js` adalah Singleton (`export const audioEngine = new AudioEngine()`). Semua komponen berbagi instance yang sama.
 * Folder `public/sfx/` menyimpan aset audio soundboard asli yang disajikan secara statis oleh Express di root URL `/sfx/*`.
 * **Jadwal program siaran & file MP3** disimpan secara permanen di server (`uploads/schedule_data.json` & `uploads/slot_*`), dikelola oleh penyiar via `ScheduleManager.jsx`, diputar otomatis via `Auto-Scheduler`, dan di-sync real-time ke pendengar via WebSocket.
+* **Pustaka Media Server (`MediaLibraryModal.jsx`)**: Sentralisasi pool lagu di `uploads/`, preview lagu, batch assign ke slot jadwal siaran, unlink instan tanpa hapus file, serta penghapusan fisik tunggal/batch/purge-all dengan sinkronisasi ke jadwal.
+* **Sistem Chunked Upload (`uploader.js`)**: Memotong file >25MB menjadi chunk 25MB untuk menembus limit 100MB Cloudflare Tunnel gratis, dilengkapi indikator kecepatan transfer (MB/s), ETA countdown, dan persentase real-time.
+* **Mikrofon & Audio PCM Relay**: Menggunakan paket biner Int16 ber-header `[0xAA, 0x55]` untuk mengeliminasi overhead JSON. Untuk mengatasi efek suara robotik akibat network jitter di koneksi internet riil, langkah peningkatan berikutnya adalah continuous circular ring buffer pada sisi playback pendengar.
 * **Skin Tema (Theme Engine)**: Pilihan skin disimpan di `localStorage` (`khanza_radio_skin`). Pilihan ini mengubah palet warna secara penuh pada *Listener Hero Card*, *Vinyl Record*, *Now Playing Bar*, *Tombol Play*, *Mobile Tabs*, *Jadwal*, *Sticky Player*, dan *Visualizer*.
+
 
