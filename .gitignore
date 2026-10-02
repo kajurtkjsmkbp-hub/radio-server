@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Local Database & Dynamic Uploaded Media (Preserves user data on update)
+uploads/*
+!uploads/.gitkeep
+
+# Environment and logs
+.env
+.env.local
+*.log
+npm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
