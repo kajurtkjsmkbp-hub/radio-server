@@ -635,10 +635,10 @@ app.delete('/api/schedule/slot/:id', (req, res) => {
   }
 });
 
-// Upload MP3 File directly into a specific schedule slot
+// Upload MP3 File directly into a specific schedule slot (supports single & chunked upload)
 app.post(
   '/api/schedule/:slotId/upload-track',
-  express.raw({ type: '*/*', limit: '100mb' }),
+  express.raw({ type: '*/*', limit: '500mb' }),
   (req, res) => {
     try {
       const buffer = req.body;
@@ -657,10 +657,33 @@ app.post(
       const cleanTitle = decodeURIComponent(rawTitle);
       const cleanFileName = decodeURIComponent(rawFileName);
 
+      const uploadId = req.headers['x-upload-id'] ? req.headers['x-upload-id'].replace(/[^a-zA-Z0-9_-]/g, '') : null;
+      const chunkIndex = req.headers['x-chunk-index'] !== undefined ? parseInt(req.headers['x-chunk-index']) : 0;
+      const chunkTotal = req.headers['x-chunk-total'] !== undefined ? parseInt(req.headers['x-chunk-total']) : 1;
+
       const safeName = `slot_${slotId}_${Date.now()}_${cleanFileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const filePath = path.join(UPLOADS_DIR, safeName);
-      fs.writeFileSync(filePath, buffer);
 
+      if (uploadId && chunkTotal > 1) {
+        const tempName = `temp_chunk_${uploadId}.part`;
+        const tempPath = path.join(UPLOADS_DIR, tempName);
+        if (chunkIndex === 0) {
+          fs.writeFileSync(tempPath, buffer);
+        } else {
+          fs.appendFileSync(tempPath, buffer);
+        }
+
+        if (chunkIndex < chunkTotal - 1) {
+          return res.json({ success: true, chunk: chunkIndex + 1, total: chunkTotal, completed: false });
+        }
+
+        // All chunks received -> move to final filePath
+        fs.renameSync(tempPath, filePath);
+      } else {
+        fs.writeFileSync(filePath, buffer);
+      }
+
+      const stats = fs.statSync(filePath);
       const actualDuration = getMp3Duration(filePath);
 
       const trackObj = {
@@ -671,7 +694,7 @@ app.post(
         fileName: cleanFileName,
         url: `/uploads/${safeName}`,
         audioUrl: `/uploads/${safeName}`,
-        size: buffer.length,
+        size: stats.size,
         duration: actualDuration,
         kbps: '320 kbps',
         khz: '44.1 kHz'
@@ -683,8 +706,8 @@ app.post(
       saveScheduleToFile();
       broadcastScheduleUpdate();
 
-      console.log(`[Jadwal Slot "${slot.title}"] Lagu baru ditambahkan: "${trackObj.title}"`);
-      res.json({ success: true, track: trackObj, schedule: programSchedule });
+      console.log(`[Jadwal Slot "${slot.title}"] Lagu baru ditambahkan: "${trackObj.title}" (${(stats.size / (1024 * 1024)).toFixed(1)} MB)`);
+      res.json({ success: true, track: trackObj, schedule: programSchedule, completed: true });
     } catch (err) {
       console.error('Error uploading track to schedule slot:', err);
       res.status(500).json({ error: err.message });
@@ -819,10 +842,10 @@ app.get('/api/library', (req, res) => {
   }
 });
 
-// Upload MP3 directly to central media library
+// Upload MP3 directly to central media library (supports single & chunked upload)
 app.post(
   '/api/library/upload',
-  express.raw({ type: '*/*', limit: '100mb' }),
+  express.raw({ type: '*/*', limit: '500mb' }),
   (req, res) => {
     try {
       const buffer = req.body;
@@ -835,10 +858,33 @@ app.post(
       const cleanTitle = decodeURIComponent(rawTitle);
       const cleanFileName = decodeURIComponent(rawFileName);
 
+      const uploadId = req.headers['x-upload-id'] ? req.headers['x-upload-id'].replace(/[^a-zA-Z0-9_-]/g, '') : null;
+      const chunkIndex = req.headers['x-chunk-index'] !== undefined ? parseInt(req.headers['x-chunk-index']) : 0;
+      const chunkTotal = req.headers['x-chunk-total'] !== undefined ? parseInt(req.headers['x-chunk-total']) : 1;
+
       const safeName = `lib_${Date.now()}_${cleanFileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       const filePath = path.join(UPLOADS_DIR, safeName);
-      fs.writeFileSync(filePath, buffer);
 
+      if (uploadId && chunkTotal > 1) {
+        const tempName = `temp_chunk_${uploadId}.part`;
+        const tempPath = path.join(UPLOADS_DIR, tempName);
+        if (chunkIndex === 0) {
+          fs.writeFileSync(tempPath, buffer);
+        } else {
+          fs.appendFileSync(tempPath, buffer);
+        }
+
+        if (chunkIndex < chunkTotal - 1) {
+          return res.json({ success: true, chunk: chunkIndex + 1, total: chunkTotal, completed: false });
+        }
+
+        // All chunks received -> move to final filePath
+        fs.renameSync(tempPath, filePath);
+      } else {
+        fs.writeFileSync(filePath, buffer);
+      }
+
+      const stats = fs.statSync(filePath);
       const duration = getMp3Duration(filePath);
       const trackObj = {
         id: `lib-${Date.now()}`,
@@ -846,14 +892,14 @@ app.post(
         fileName: cleanFileName,
         url: `/uploads/${safeName}`,
         audioUrl: `/uploads/${safeName}`,
-        size: buffer.length,
+        size: stats.size,
         duration,
         mtime: Date.now(),
         usedInSlots: []
       };
 
-      console.log(`[Pustaka Server] Lagu baru ditambahkan ke koleksi: "${cleanTitle}"`);
-      res.json({ success: true, track: trackObj });
+      console.log(`[Pustaka Server] Lagu baru ditambahkan ke koleksi: "${cleanTitle}" (${(stats.size / (1024 * 1024)).toFixed(1)} MB)`);
+      res.json({ success: true, track: trackObj, completed: true });
     } catch (err) {
       console.error('Error uploading track to library:', err);
       res.status(500).json({ error: err.message });

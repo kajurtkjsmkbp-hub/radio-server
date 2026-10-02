@@ -46,6 +46,7 @@ export default function MediaLibraryModal({
   const [successUploadSummary, setSuccessUploadSummary] = useState(null);
   const [uploadError, setUploadError] = useState(null);
   const [actionMessage, setActionMessage] = useState(null);
+  const [largeFileWarningModal, setLargeFileWarningModal] = useState(null);
   const [deleteConfirmFile, setDeleteConfirmFile] = useState(null);
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
@@ -130,26 +131,32 @@ export default function MediaLibraryModal({
   };
 
   // Upload new MP3s directly to the central library with real-time speed & progress
-  const handleUploadToLibrary = async (files) => {
+  const handleUploadToLibrary = (files) => {
     if (!files || files.length === 0) return;
+    const fileList = Array.from(files);
+
+    // Check if any file exceeds ~95 MB
+    const oversizedFiles = fileList.filter(f => f.size > 95 * 1024 * 1024);
+    if (oversizedFiles.length > 0) {
+      setLargeFileWarningModal({
+        file: oversizedFiles[0],
+        totalOversized: oversizedFiles.length,
+        onConfirm: () => executeUploadToLibrary(fileList),
+        onCancel: () => {
+          setLargeFileWarningModal(null);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      });
+      return;
+    }
+
+    executeUploadToLibrary(fileList);
+  };
+
+  const executeUploadToLibrary = async (fileList) => {
     setUploading(true);
     setUploadError(null);
     setSuccessUploadSummary(null);
-    const fileList = Array.from(files);
-
-    // Warning if any file exceeds ~98 MB (Cloudflare Tunnel Free limit is ~100MB body)
-    const oversizedFiles = fileList.filter(f => f.size > 98 * 1024 * 1024);
-    if (oversizedFiles.length > 0) {
-      const confirmUpload = window.confirm(
-        `Perhatian: File "${oversizedFiles[0].name}" berukuran ${(oversizedFiles[0].size / (1024 * 1024)).toFixed(1)} MB.\n` +
-        `Cloudflare Tunnel gratis biasanya membatasi upload maks 100 MB per request.\n` +
-        `Apakah Anda ingin tetap mencoba mengunggah?`
-      );
-      if (!confirmUpload) {
-        setUploading(false);
-        return;
-      }
-    }
 
     let successCount = 0;
     let totalUploadedBytes = 0;
@@ -198,6 +205,8 @@ export default function MediaLibraryModal({
     setUploading(false);
     setUploadProgressData(null);
     fetchLibraryTracks();
+
+    if (fileInputRef.current) fileInputRef.current.value = '';
 
     if (successCount > 0) {
       const summary = {
@@ -528,54 +537,69 @@ export default function MediaLibraryModal({
           </div>
         </div>
 
-        {/* REAL-TIME UPLOAD PROGRESS CARD */}
+        {/* REAL-TIME UPLOAD PROGRESS CARD (PROMINENT & LARGE) */}
         {uploading && uploadProgressData && (
-          <div className="bg-gradient-to-r from-[#0d1c2e] via-[#091524] to-[#0d1c2e] border-b border-cyan-500/50 p-3 sm:p-4 animate-in slide-in-from-top-2">
-            <div className="flex flex-col gap-2 max-w-4xl mx-auto">
-              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <Upload className="w-4 h-4 text-cyan-400 animate-bounce shrink-0" />
-                  <span className="font-bold text-gray-200 truncate">
-                    Mengunggah ({uploadProgressData.current}/{uploadProgressData.total}):{' '}
-                    <span className="text-cyan-300 font-semibold">&ldquo;{uploadProgressData.name}&rdquo;</span>
-                  </span>
+          <div className="bg-gradient-to-r from-[#0d1f36] via-[#081322] to-[#0d1f36] border-b-2 border-cyan-500/70 p-4 sm:p-5 shadow-2xl animate-in slide-in-from-top-2">
+            <div className="flex flex-col gap-3 max-w-4xl mx-auto">
+              {/* Header row: file name + badges */}
+              <div className="flex items-center justify-between text-xs sm:text-sm flex-wrap gap-2">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <div className="p-2 rounded-xl bg-cyan-500/20 border border-cyan-500/50 text-cyan-300 shrink-0">
+                    <Upload className="w-5 h-5 text-cyan-400 animate-bounce" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-cyan-950 border border-cyan-500/40 text-cyan-300">
+                        File {uploadProgressData.current} dari {uploadProgressData.total}
+                      </span>
+                      {uploadProgressData.chunk && uploadProgressData.totalChunks > 1 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-950 border border-purple-500/40 text-purple-300">
+                          Bagian {uploadProgressData.chunk}/{uploadProgressData.totalChunks}
+                        </span>
+                      )}
+                    </div>
+                    <span className="font-extrabold text-white truncate text-sm sm:text-base block mt-0.5">
+                      &ldquo;{uploadProgressData.name}&rdquo;
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2.5 shrink-0">
-                  <span className="px-2 py-0.5 rounded bg-cyan-950/90 border border-cyan-500/40 text-amber-300 font-lcd font-bold text-xs flex items-center gap-1 shadow-sm">
-                    <Zap className="w-3 h-3 fill-current text-amber-400" />
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="px-3 py-1.5 rounded-xl bg-cyan-950/90 border border-cyan-500/50 text-amber-300 font-lcd font-bold text-sm sm:text-base flex items-center gap-1.5 shadow-lg shadow-cyan-950/60">
+                    <Zap className="w-4 h-4 fill-current text-amber-400" />
                     {uploadProgressData.speedMBs} MB/s
                   </span>
-                  <span className="font-lcd text-sm font-bold text-emerald-400 min-w-[42px] text-right">
+                  <span className="font-lcd text-2xl sm:text-3xl font-black text-emerald-400 min-w-[65px] text-right drop-shadow-[0_0_12px_rgba(52,211,153,0.4)]">
                     {uploadProgressData.percent}%
                   </span>
                 </div>
               </div>
 
               {/* Progress Bar with glowing pulse */}
-              <div className="w-full bg-[#040810] h-3 rounded-full overflow-hidden border border-cyan-500/30 p-[1px]">
+              <div className="w-full bg-[#040810] h-4 rounded-full overflow-hidden border border-cyan-500/40 p-[2px] shadow-inner">
                 <div
                   className="bg-gradient-to-r from-cyan-500 via-blue-500 to-emerald-400 h-full rounded-full transition-all duration-150 relative overflow-hidden"
                   style={{ width: `${uploadProgressData.percent}%` }}
                 >
-                  <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                  <div className="absolute inset-0 bg-white/25 animate-pulse" />
                 </div>
               </div>
 
-              <div className="flex items-center justify-between text-[11px] text-gray-400 font-chakra">
+              <div className="flex items-center justify-between text-xs text-gray-300 font-chakra">
                 <span>
-                  Ukuran: <strong className="text-gray-200">{uploadProgressData.uploadedMB} MB</strong> dari{' '}
-                  <strong className="text-cyan-300">{uploadProgressData.fileSizeMB} MB</strong>
+                  Ukuran Terkirim: <strong className="text-white font-mono text-sm">{uploadProgressData.uploadedMB} MB</strong> dari{' '}
+                  <strong className="text-cyan-300 font-mono text-sm">{uploadProgressData.fileSizeMB} MB</strong>
                 </span>
                 <span>
                   {uploadProgressData.etaSeconds > 0 ? (
                     <>
                       Estimasi sisa waktu:{' '}
-                      <strong className="text-amber-300 font-mono">~{uploadProgressData.etaSeconds} detik</strong>
+                      <strong className="text-amber-300 font-mono text-sm">~{uploadProgressData.etaSeconds} detik</strong>
                     </>
                   ) : uploadProgressData.percent === 100 ? (
-                    <span className="text-emerald-400 font-bold animate-pulse">Menyimpan ke harddisk server...</span>
+                    <span className="text-emerald-400 font-bold animate-pulse text-sm">Menyimpan ke harddisk server...</span>
                   ) : (
-                    <span className="text-gray-500">Menghitung kecepatan...</span>
+                    <span className="text-gray-400">Mengirim data audio...</span>
                   )}
                 </span>
               </div>
@@ -1006,6 +1030,89 @@ export default function MediaLibraryModal({
                 <span>Kosongkan Seluruh Lagu</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM LARGE FILE WARNING CONFIRMATION MODAL */}
+      {largeFileWarningModal && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-[#0c1221] border-2 border-amber-500/80 shadow-[0_0_60px_rgba(245,158,11,0.3)] rounded-2xl max-w-lg w-full p-6 text-gray-200 flex flex-col gap-5 animate-in zoom-in-95 duration-200">
+            
+            {/* Header */}
+            <div className="flex items-start gap-4">
+              <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/50 text-amber-400 shrink-0 shadow-lg shadow-amber-950/50">
+                <AlertTriangle className="w-8 h-8 animate-pulse text-amber-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-950/80 border border-amber-500/60 text-amber-300">
+                  PERINGATAN UKURAN FILE BESAR
+                </span>
+                <h3 className="text-lg font-extrabold text-white mt-1 tracking-wide font-orbitron">
+                  KONFIRMASI UPLOAD AUDIO
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  File audio yang Anda pilih berukuran di atas batas standar Cloudflare.
+                </p>
+              </div>
+            </div>
+
+            {/* File Info Box */}
+            <div className="bg-[#060a12] border border-[#1e2a42] rounded-xl p-4 flex flex-col gap-3">
+              <div className="flex items-center gap-2.5 text-xs text-gray-200 font-semibold truncate">
+                <Music className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="truncate text-white text-sm font-bold">{largeFileWarningModal.file.name}</span>
+              </div>
+
+              <div className="flex items-center justify-between pt-2.5 border-t border-[#172236]">
+                <span className="text-xs text-gray-400">Ukuran File:</span>
+                <span className="font-lcd text-xl font-bold text-amber-300 px-3 py-0.5 rounded-lg bg-[#0b1526] border border-amber-500/40 shadow-inner">
+                  {(largeFileWarningModal.file.size / (1024 * 1024)).toFixed(1)} MB
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] text-gray-400 pt-1">
+                <span>Teknologi Transfer:</span>
+                <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                  Auto Multi-Chunk (Aman dari Limit Cloudflare 100MB)
+                </span>
+              </div>
+            </div>
+
+            {/* Info Message */}
+            <div className="text-xs text-gray-300 bg-amber-950/25 border border-amber-500/30 rounded-xl p-3.5 leading-relaxed">
+              💡 <strong>Info Sistem:</strong> File ini akan otomatis dipecah menjadi bagian-bagian kecil (chunk 25 MB) saat diunggah sehingga <strong>tidak akan terputus atau terkena error 413</strong> dari Cloudflare Tunnel. Proses ini membutuhkan waktu sekitar 1–2 menit tergantung kecepatan uplink internet Anda.
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const cb = largeFileWarningModal.onConfirm;
+                  setLargeFileWarningModal(null);
+                  if (cb) cb();
+                }}
+                className="w-full sm:flex-1 py-3 px-5 rounded-xl font-bold text-xs sm:text-sm text-black bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 shadow-xl shadow-amber-500/25 flex items-center justify-center gap-2 cursor-pointer transition-all transform active:scale-95"
+              >
+                <Upload className="w-4 h-4 text-black" />
+                <span>LANJUTKAN UPLOAD ({(largeFileWarningModal.file.size / (1024 * 1024)).toFixed(1)} MB)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const cb = largeFileWarningModal.onCancel;
+                  setLargeFileWarningModal(null);
+                  if (cb) cb();
+                }}
+                className="w-full sm:w-auto py-3 px-5 rounded-xl font-semibold text-xs sm:text-sm text-gray-300 hover:text-white bg-[#141d2e] hover:bg-[#1a263c] border border-gray-700/60 cursor-pointer transition-all"
+              >
+                BATALKAN
+              </button>
+            </div>
+
           </div>
         </div>
       )}
