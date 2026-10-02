@@ -881,6 +881,28 @@ app.post('/api/schedule/:slotId/add-library-tracks', (req, res) => {
   res.json({ success: true, schedule: programSchedule, addedCount });
 });
 
+// Unlink track from a specific slot by URL (keeps the file in library)
+app.post('/api/schedule/:slotId/unlink-track', (req, res) => {
+  const slotId = parseInt(req.params.slotId);
+  const { url, fileName } = req.body || {};
+  const slot = programSchedule.find(s => s.id === slotId);
+  if (!slot || !slot.tracks) {
+    return res.status(404).json({ error: 'Slot jadwal tidak ditemukan' });
+  }
+
+  const beforeLen = slot.tracks.length;
+  slot.tracks = slot.tracks.filter(t => {
+    if (url && (t.url === url || t.audioUrl === url)) return false;
+    if (fileName && t.fileName === fileName) return false;
+    return true;
+  });
+
+  saveScheduleToFile();
+  broadcastScheduleUpdate();
+  console.log(`[Pustaka Server] Lagu dilepaskan dari slot "${slot.title}" (Sisa: ${slot.tracks.length} lagu)`);
+  res.json({ success: true, removedCount: beforeLen - slot.tracks.length, schedule: programSchedule });
+});
+
 // Delete file physically from Proxmox server
 app.delete('/api/library/file', (req, res) => {
   const { fileName, url, force } = req.body || {};

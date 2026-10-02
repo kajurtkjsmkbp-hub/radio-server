@@ -180,6 +180,27 @@ export default function MediaLibraryModal({
     }
   };
 
+  // Unlink/remove track from a specific slot (keeps physical file in library intact)
+  const handleUnlinkTrackFromSlot = async (slotId, track) => {
+    try {
+      const res = await fetch(`/api/schedule/${slotId}/unlink-track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: track.url, fileName: track.fileName })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onTracksAdded && data.schedule) {
+          onTracksAdded(data.schedule);
+        }
+        showActionToast(`Lagu dilepaskan dari slot jadwal.`);
+        fetchLibraryTracks(); // refresh status
+      }
+    } catch (err) {
+      console.error('Error unlinking track from slot:', err);
+    }
+  };
+
   // Delete file permanently from server
   const handleDeleteFile = async (track, force = false) => {
     try {
@@ -540,10 +561,21 @@ export default function MediaLibraryModal({
                         {track.usedInSlots.map(s => (
                           <span
                             key={s.id}
-                            className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/70 border border-purple-500/40 text-purple-300 truncate max-w-[130px]"
-                            title={`Aktif di: [${s.startTime}-${s.endTime}] ${s.title}`}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/80 border border-purple-500/40 text-purple-200 group/badge hover:border-purple-400 transition-colors max-w-[140px]"
+                            title={`Aktif di: [${s.startTime}-${s.endTime}] ${s.title} — Klik ✕ untuk menghapus dari slot ini`}
                           >
-                            {s.title}
+                            <span className="truncate">{s.title}</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleUnlinkTrackFromSlot(s.id, track);
+                              }}
+                              className="text-gray-400 hover:text-rose-400 hover:bg-rose-950/60 p-0.5 rounded transition-colors cursor-pointer shrink-0"
+                              title={`Hapus lagu ini dari jadwal "${s.title}"`}
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
                           </span>
                         ))}
                       </div>
